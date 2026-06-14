@@ -2199,12 +2199,28 @@ function AdStudioTab() {
   };
 
   const triggerDownload = (dataUrl, filename) => {
-    const a = document.createElement('a');
-    a.href = dataUrl;
-    a.download = filename || 'million-ad.png';
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
+    // Large PNG data: URLs can be rejected by browsers; download via an
+    // object URL (Blob) instead, which has no length limit.
+    try {
+      const blob = dataUrlToBlob(dataUrl);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename || 'million-ad.png';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 4000);
+    } catch (e) {
+      // Last-resort: open the image in a new tab so the user can save it.
+      try {
+        const w = window.open();
+        if (w) w.document.write('<img src="' + dataUrl + '" style="max-width:100%">');
+        else alert('Download blocked by the browser. Please allow pop-ups and retry.');
+      } catch (_) {
+        alert('Download failed: ' + (e.message || e));
+      }
+    }
   };
 
   const copyImageToClipboard = async (dataUrl) => {
