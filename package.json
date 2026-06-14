@@ -11,6 +11,7 @@
     "db:migrate": "drizzle-kit migrate"
   },
   "dependencies": {
+    "@vercel/blob": "^2.4.0",
     "@vercel/og": "^0.11.1",
     "drizzle-orm": "^0.45.2",
     "next": "latest",

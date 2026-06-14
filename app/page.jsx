@@ -2175,6 +2175,8 @@ function AdStudioTab() {
   const [pendingExport, setPendingExport] = useState(null);
   const [publishing, setPublishing] = useState(null);
   const [copied, setCopied] = useState(false);
+  const [savedUrl, setSavedUrl] = useState(null);
+  const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     const handler = (e) => {
@@ -2182,6 +2184,7 @@ function AdStudioTab() {
         setPendingExport({ dataUrl: e.data.dataUrl, filename: e.data.filename });
         setPublishing(null);
         setCopied(false);
+        setSavedUrl(null);
       }
     };
     window.addEventListener('message', handler);
@@ -2195,11 +2198,53 @@ function AdStudioTab() {
     return new Blob([bytes], { type: mime });
   };
 
+  const triggerDownload = (dataUrl, filename) => {
+    // Large PNG data: URLs can be rejected by browsers; download via an
+    // object URL (Blob) instead, which has no length limit.
+    try {
+      const blob = dataUrlToBlob(dataUrl);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename || 'million-ad.png';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 4000);
+    } catch (e) {
+      // Last-resort: open the image in a new tab so the user can save it.
+      try {
+        const w = window.open();
+        if (w) w.document.write('<img src="' + dataUrl + '" style="max-width:100%">');
+        else alert('Download blocked by the browser. Please allow pop-ups and retry.');
+      } catch (_) {
+        alert('Download failed: ' + (e.message || e));
+      }
+    }
+  };
+
   const copyImageToClipboard = async (dataUrl) => {
     try {
       const blob = dataUrlToBlob(dataUrl);
       await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
     } catch(e) { await navigator.clipboard.writeText(dataUrl); }
+  };
+
+  const handleSaveToCloud = async () => {
+    setSaving(true);
+    try {
+      const res = await fetch('/api/save-ad', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ dataUrl: pendingExport.dataUrl, filename: pendingExport.filename }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Upload failed');
+      setSavedUrl(data.url);
+    } catch(e) {
+      alert('Could not save to cloud: ' + e.message);
+    }
+    setSaving(false);
   };
 
   const handlePublish = async (platform) => {
@@ -2236,14 +2281,22 @@ function AdStudioTab() {
 
         {pendingExport && (
           <div style={{ position: "fixed", inset: 0, background: "rgba(10,20,40,0.78)", zIndex: 9999, display: "flex", alignItems: "center", justifyContent: "center", padding: "1rem" }}>
-            <div style={{ background: "var(--cream)", borderRadius: "10px", padding: "2rem", maxWidth: "460px", width: "100%", boxShadow: "0 24px 64px rgba(0,0,0,0.45)" }}>
+            <div style={{ background: "var(--cream)", borderRadius: "10px", padding: "2rem", maxWidth: "480px", width: "100%", boxShadow: "0 24px 64px rgba(0,0,0,0.45)" }}>
               <div style={{ borderRadius: "6px", overflow: "hidden", marginBottom: "1.5rem", border: "1px solid var(--line)", lineHeight: 0 }}>
                 <img src={pendingExport.dataUrl} alt="Ad preview" style={{ width: "100%", display: "block" }} />
               </div>
               <h3 style={{ fontFamily: "var(--font-display)", fontSize: "1.35rem", fontWeight: 500, marginBottom: "0.3rem" }}>Ready to publish</h3>
               <p style={{ fontSize: "0.82rem", color: "var(--mist)", marginBottom: "1.5rem" }}>
-                {copied ? "✓ Image copied to clipboard — paste it into your post." : "Choose a platform or save to device."}
+                {copied ? "✓ Image copied to clipboard — paste it into your post." : "Choose a platform, save to device, or upload to cloud."}
               </p>
+
+              {savedUrl && (
+                <div style={{ padding: "0.75rem 1rem", background: "rgba(14,31,61,0.06)", borderRadius: "5px", fontSize: "0.78rem", marginBottom: "1rem", border: "1px solid var(--line)", wordBreak: "break-all" }}>
+                  <strong>Saved to cloud:</strong>{" "}
+                  <a href={savedUrl} target="_blank" rel="noopener noreferrer" style={{ color: "var(--navy)", textDecoration: "underline" }}>{savedUrl}</a>
+                </div>
+              )}
+
               <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem", marginBottom: "1.25rem" }}>
                 <button onClick={() => handlePublish('facebook')} disabled={!!publishing}
                   style={{ display: "flex", alignItems: "center", gap: "0.75rem", padding: "0.85rem 1.25rem", background: "#1877F2", color: "#fff", border: "none", borderRadius: "6px", fontSize: "0.95rem", fontWeight: 600, cursor: "pointer", opacity: publishing === 'facebook' ? 0.7 : 1 }}>
@@ -2256,17 +2309,26 @@ function AdStudioTab() {
                   {publishing === 'instagram' ? 'Opening Instagram…' : 'Publish to Instagram'}
                 </button>
               </div>
+
               {copied && (
                 <div style={{ padding: "0.7rem 1rem", background: "rgba(14,31,61,0.06)", borderRadius: "5px", fontSize: "0.78rem", marginBottom: "1rem", border: "1px solid var(--line)" }}>
                   <strong>Desktop:</strong> Image copied — open the platform, create a new post, and paste (Ctrl+V / Cmd+V).
                 </div>
               )}
-              <div style={{ display: "flex", gap: "0.5rem", justifyContent: "flex-end" }}>
-                <button onClick={() => setPendingExport(null)} style={{ padding: "0.6rem 1rem", background: "transparent", border: "1px solid var(--line-med)", color: "var(--navy)", borderRadius: "5px", fontSize: "0.85rem", cursor: "pointer" }}>Close</button>
-                <a href={pendingExport.dataUrl} download={pendingExport.filename} onClick={() => setTimeout(() => setPendingExport(null), 300)}
-                  style={{ padding: "0.6rem 1rem", background: "var(--navy)", color: "var(--gold)", borderRadius: "5px", fontSize: "0.85rem", textDecoration: "none", fontWeight: 600 }}>
-                  ↓ Download
-                </a>
+
+              <div style={{ display: "flex", gap: "0.5rem", justifyContent: "flex-end", flexWrap: "wrap" }}>
+                <button onClick={() => setPendingExport(null)}
+                  style={{ padding: "0.6rem 1rem", background: "transparent", border: "1px solid var(--line-med)", color: "var(--navy)", borderRadius: "5px", fontSize: "0.85rem", cursor: "pointer" }}>
+                  Close
+                </button>
+                <button onClick={handleSaveToCloud} disabled={saving || !!savedUrl}
+                  style={{ padding: "0.6rem 1rem", background: savedUrl ? "var(--gold-soft)" : "var(--navy-mid)", color: savedUrl ? "var(--navy)" : "var(--cream)", border: "none", borderRadius: "5px", fontSize: "0.85rem", fontWeight: 600, cursor: saving ? "wait" : "pointer", opacity: saving ? 0.7 : 1 }}>
+                  {saving ? "Saving…" : savedUrl ? "☁ Saved" : "☁ Save to Cloud"}
+                </button>
+                <button onClick={() => { triggerDownload(pendingExport.dataUrl, pendingExport.filename); setTimeout(() => setPendingExport(null), 300); }}
+                  style={{ padding: "0.6rem 1rem", background: "var(--navy)", color: "var(--gold)", border: "none", borderRadius: "5px", fontSize: "0.85rem", fontWeight: 600, cursor: "pointer" }}>
+                  ↓ Download PNG
+                </button>
               </div>
             </div>
           </div>
