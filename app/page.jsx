@@ -1,6 +1,7 @@
 "use client";
 
-import { useState, useEffect, useCallback, useMemo, useRef, Fragment } from "react";
+import { useState, useEffect, useCallback, useRef, Fragment } from "react";
+
 
 /* === PHOTO LIBRARY — curated Unsplash IDs, all HQ, all free === */
 const PHOTOS = {
@@ -500,39 +501,14 @@ const ADMIN_PASSWORD = "million2026";
 const STORAGE_KEY = "million-packages-v3";
 
 async function loadPackages() {
-  try {
-    const res = await fetch('/api/packages');
-    if (res.ok) {
-      const data = await res.json();
-      if (Array.isArray(data.packages) && data.packages.length > 0) return data.packages;
-      if (Array.isArray(data.packages) && data.packages.length === 0) {
-        await savePackages(SEED_DATA.packages);
-        return SEED_DATA.packages;
-      }
-    }
-  } catch (e) {}
-
-  try {
-    const value = window.localStorage.getItem(STORAGE_KEY);
-    if (value) return JSON.parse(value);
-  } catch (e) {}
+  try { const r = await window.storage.get(STORAGE_KEY); if (r && r.value) return JSON.parse(r.value); } catch (e) {}
   return SEED_DATA.packages;
 }
 async function savePackages(packages) {
-  try {
-    const res = await fetch('/api/packages', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ packages }),
-    });
-    if (res.ok) return true;
-  } catch (e) {}
-
-  try { window.localStorage.setItem(STORAGE_KEY, JSON.stringify(packages)); return true; } catch (e) { return false; }
+  try { await window.storage.set(STORAGE_KEY, JSON.stringify(packages)); return true; } catch (e) { return false; }
 }
 async function resetPackages() {
-  try { window.localStorage.removeItem(STORAGE_KEY); } catch (e) {}
-  await savePackages(SEED_DATA.packages);
+  try { await window.storage.delete(STORAGE_KEY); } catch (e) {}
   return SEED_DATA.packages;
 }
 
@@ -1569,14 +1545,11 @@ const DEFAULT_SECTIONS = [
 ];
 
 async function loadCmsData(key, def) {
-  try {
-    const value = window.localStorage.getItem(key);
-    if (value) return JSON.parse(value);
-  } catch (e) {}
+  try { const r = await window.storage.get(key); if (r && r.value) return JSON.parse(r.value); } catch (e) {}
   return JSON.parse(JSON.stringify(def));
 }
 async function saveCmsData(key, data) {
-  try { window.localStorage.setItem(key, JSON.stringify(data)); return true; } catch (e) { return false; }
+  try { await window.storage.set(key, JSON.stringify(data)); return true; } catch (e) { return false; }
 }
 
 
@@ -1983,7 +1956,10 @@ function PriceCalculatorTab({ onShowToast }) {
     });
     txt += `\n\nGenerated ${new Date().toLocaleString()}\n${dest.childAges}\n`;
     const blob = new Blob([txt], { type: "text/plain;charset=utf-8" });
-    downloadBlob(blob, `${dest.key}-prices-${new Date().toISOString().slice(0,10)}.txt`);
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = `${dest.key}-prices-${new Date().toISOString().slice(0,10)}.txt`;
+    a.click(); URL.revokeObjectURL(url);
     onShowToast("Exported ✓");
   };
 
@@ -2192,121 +2168,109 @@ function calcPriceCell(kind) {
 
 
 /* ════════════════════════════════════════════════════════════
-   AD STUDIO TAB
-   Server-generated social media post designer
+   AD STUDIO TAB — Ad Studio fully embedded as base64 blob
    ════════════════════════════════════════════════════════════ */
 
-function AdStudioTab({ packages = [] }) {
-  const firstPackage = packages[0] || {};
-  const [selectedId, setSelectedId] = useState(firstPackage.id || "custom");
-  const [format, setFormat] = useState("square");
-  const [custom, setCustom] = useState({
-    title: firstPackage.title || "Million Travel",
-    subtitle: firstPackage.subtitle || "You're an explorer, not a tourist",
-    country: firstPackage.country || "Curated journeys",
-    price: firstPackage.priceFrom ? `From ${firstPackage.priceFrom} ${firstPackage.currency || "JOD"}` : "From 399 JOD",
-  });
-  const [downloading, setDownloading] = useState(false);
-
-  const selectedPackage = packages.find(p => p.id === selectedId);
+function AdStudioTab() {
+  const [pendingExport, setPendingExport] = useState(null);
+  const [publishing, setPublishing] = useState(null);
+  const [copied, setCopied] = useState(false);
 
   useEffect(() => {
-    if (!selectedPackage) return;
-    setCustom({
-      title: selectedPackage.title || "Million Travel",
-      subtitle: selectedPackage.subtitle || "You're an explorer, not a tourist",
-      country: selectedPackage.country || CATEGORIES[selectedPackage.category]?.en || "Curated journeys",
-      price: selectedPackage.priceFrom ? `From ${selectedPackage.priceFrom} ${selectedPackage.currency || "JOD"}` : "Ask for price",
-    });
-  }, [selectedPackage]);
+    const handler = (e) => {
+      if (e.data && e.data.type === 'adstudio_export') {
+        setPendingExport({ dataUrl: e.data.dataUrl, filename: e.data.filename });
+        setPublishing(null);
+        setCopied(false);
+      }
+    };
+    window.addEventListener('message', handler);
+    return () => window.removeEventListener('message', handler);
+  }, []);
 
-  const params = useMemo(() => {
-    const q = new URLSearchParams({
-      title: custom.title,
-      subtitle: custom.subtitle,
-      country: custom.country,
-      price: custom.price,
-      format,
-    });
-    return q.toString();
-  }, [custom, format]);
+  const dataUrlToBlob = (dataUrl) => {
+    const [header, b64] = dataUrl.split(',');
+    const mime = header.match(/:(.*?);/)[1];
+    const bytes = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
+    return new Blob([bytes], { type: mime });
+  };
 
-  const imageUrl = `/api/ad-image?${params}`;
-  const previewRatio = format === "story" ? "9 / 16" : "1 / 1";
-
-  const update = (field, value) => setCustom(prev => ({ ...prev, [field]: value }));
-
-  const handleDownload = async () => {
-    setDownloading(true);
+  const copyImageToClipboard = async (dataUrl) => {
     try {
-      const res = await fetch(imageUrl);
-      if (!res.ok) throw new Error("Could not generate ad image.");
-      const blob = await res.blob();
-      const slug = safeFilename(custom.title || "million-ad", "million-ad").toLowerCase();
-      downloadBlob(blob, `${slug}-${format}.png`);
-    } catch (error) {
-      alert(error.message || "Download failed.");
-    } finally {
-      setDownloading(false);
-    }
+      const blob = dataUrlToBlob(dataUrl);
+      await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
+    } catch(e) { await navigator.clipboard.writeText(dataUrl); }
+  };
+
+  const handlePublish = async (platform) => {
+    setPublishing(platform);
+    setCopied(false);
+    try {
+      const blob = dataUrlToBlob(pendingExport.dataUrl);
+      const file = new File([blob], pendingExport.filename, { type: 'image/png' });
+      if (navigator.canShare && navigator.canShare({ files: [file] })) {
+        await navigator.share({ files: [file], title: 'Million Travel Ad' });
+        setPendingExport(null);
+      } else {
+        await copyImageToClipboard(pendingExport.dataUrl);
+        setCopied(true);
+        const urls = { facebook: 'https://www.facebook.com/', instagram: 'https://www.instagram.com/' };
+        setTimeout(() => window.open(urls[platform], '_blank'), 700);
+      }
+    } catch(e) { if (e.name !== 'AbortError') alert('Could not share: ' + e.message); }
+    setPublishing(null);
   };
 
   return (
     <Fragment>
       <TabHeader
         title="Ad Studio"
-        subtitle="Generate reliable social media PNGs from server-rendered templates."
-        action={<button className="admin-btn primary" onClick={handleDownload} disabled={downloading}>{downloading ? "Generating…" : "↓ Download PNG"}</button>}
+        subtitle="Design promotional visuals — then publish directly to Facebook or Instagram, or download."
       />
-      <div style={{ padding: "2rem 2.5rem", display: "grid", gridTemplateColumns: "minmax(280px, 420px) 1fr", gap: "2rem", alignItems: "start" }}>
-        <div>
-          <CmsCard title="Post Content">
-            <div className="form-group">
-              <label>Start from package</label>
-              <select className="form-control" value={selectedId} onChange={e => setSelectedId(e.target.value)}>
-                <option value="custom">Custom post</option>
-                {packages.map(pkg => <option key={pkg.id} value={pkg.id}>{pkg.title}</option>)}
-              </select>
-            </div>
-            <div className="form-group">
-              <label>Format</label>
-              <select className="form-control" value={format} onChange={e => setFormat(e.target.value)}>
-                <option value="square">Instagram/Facebook Square — 1080×1080</option>
-                <option value="story">Story/Reel Cover — 1080×1920</option>
-              </select>
-            </div>
-            <div className="form-group"><label>Title</label><input className="form-control" value={custom.title} onChange={e => update("title", e.target.value)} /></div>
-            <div className="form-group"><label>Subtitle</label><textarea className="form-control" rows="3" value={custom.subtitle} onChange={e => update("subtitle", e.target.value)} /></div>
-            <div className="form-row">
-              <div className="form-group"><label>Country / Label</label><input className="form-control" value={custom.country} onChange={e => update("country", e.target.value)} /></div>
-              <div className="form-group"><label>Price Line</label><input className="form-control" value={custom.price} onChange={e => update("price", e.target.value)} /></div>
-            </div>
-          </CmsCard>
+      <div style={{ position: "relative", background: "var(--bone)" }}>
+        <iframe src="/ad-studio.html"
+            style={{ width: "100%", height: "calc(100vh - 118px)", border: "none", display: "block" }}
+            title="Million Travel Ad Studio"
+            sandbox="allow-same-origin allow-scripts allow-popups allow-forms allow-downloads allow-modals"
+          />
 
-          <CmsCard title="Recommended Workflow">
-            <ol style={{ paddingLeft: "1.2rem", fontSize: "0.86rem", lineHeight: 1.7, opacity: 0.75 }}>
-              <li>Select a package or write a custom post.</li>
-              <li>Choose square or story format.</li>
-              <li>Review the live preview.</li>
-              <li>Download PNG and upload to Facebook/Instagram.</li>
-            </ol>
-            <p style={{ marginTop: "1rem", fontSize: "0.78rem", opacity: 0.55 }}>
-              This replaces the old iframe exporter, so downloads are generated by the server and are much more reliable.
-            </p>
-          </CmsCard>
-        </div>
-
-        <div style={{ position: "sticky", top: "1rem" }}>
-          <CmsCard title="Live Preview" style={{ marginBottom: 0 }}>
-            <div style={{ display: "flex", justifyContent: "center", background: "var(--navy-deep)", borderRadius: 8, padding: "1rem", minHeight: 420 }}>
-              <img
-                src={imageUrl}
-                alt="Social post preview"
-                style={{ width: "min(100%, 520px)", aspectRatio: previewRatio, objectFit: "contain", borderRadius: 6, boxShadow: "0 18px 50px rgba(0,0,0,0.35)" }}
-              />
+        {pendingExport && (
+          <div style={{ position: "fixed", inset: 0, background: "rgba(10,20,40,0.78)", zIndex: 9999, display: "flex", alignItems: "center", justifyContent: "center", padding: "1rem" }}>
+            <div style={{ background: "var(--cream)", borderRadius: "10px", padding: "2rem", maxWidth: "460px", width: "100%", boxShadow: "0 24px 64px rgba(0,0,0,0.45)" }}>
+              <div style={{ borderRadius: "6px", overflow: "hidden", marginBottom: "1.5rem", border: "1px solid var(--line)", lineHeight: 0 }}>
+                <img src={pendingExport.dataUrl} alt="Ad preview" style={{ width: "100%", display: "block" }} />
+              </div>
+              <h3 style={{ fontFamily: "var(--font-display)", fontSize: "1.35rem", fontWeight: 500, marginBottom: "0.3rem" }}>Ready to publish</h3>
+              <p style={{ fontSize: "0.82rem", color: "var(--mist)", marginBottom: "1.5rem" }}>
+                {copied ? "✓ Image copied to clipboard — paste it into your post." : "Choose a platform or save to device."}
+              </p>
+              <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem", marginBottom: "1.25rem" }}>
+                <button onClick={() => handlePublish('facebook')} disabled={!!publishing}
+                  style={{ display: "flex", alignItems: "center", gap: "0.75rem", padding: "0.85rem 1.25rem", background: "#1877F2", color: "#fff", border: "none", borderRadius: "6px", fontSize: "0.95rem", fontWeight: 600, cursor: "pointer", opacity: publishing === 'facebook' ? 0.7 : 1 }}>
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="white"><path d="M24 12.073c0-6.627-5.373-12-12-12s-12 5.373-12 12c0 5.99 4.388 10.954 10.125 11.854v-8.385H7.078v-3.47h3.047V9.43c0-3.007 1.792-4.669 4.533-4.669 1.312 0 2.686.235 2.686.235v2.953H15.83c-1.491 0-1.956.925-1.956 1.874v2.25h3.328l-.532 3.47h-2.796v8.385C19.612 23.027 24 18.062 24 12.073z"/></svg>
+                  {publishing === 'facebook' ? 'Opening Facebook…' : 'Publish to Facebook'}
+                </button>
+                <button onClick={() => handlePublish('instagram')} disabled={!!publishing}
+                  style={{ display: "flex", alignItems: "center", gap: "0.75rem", padding: "0.85rem 1.25rem", background: "linear-gradient(45deg,#f09433,#e6683c,#dc2743,#cc2366,#bc1888)", color: "#fff", border: "none", borderRadius: "6px", fontSize: "0.95rem", fontWeight: 600, cursor: "pointer", opacity: publishing === 'instagram' ? 0.7 : 1 }}>
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="white"><path d="M12 2.163c3.204 0 3.584.012 4.85.07 3.252.148 4.771 1.691 4.919 4.919.058 1.265.069 1.645.069 4.849 0 3.205-.012 3.584-.069 4.849-.149 3.225-1.664 4.771-4.919 4.919-1.266.058-1.644.07-4.85.07-3.204 0-3.584-.012-4.849-.07-3.26-.149-4.771-1.699-4.919-4.92-.058-1.265-.07-1.644-.07-4.849 0-3.204.013-3.583.07-4.849.149-3.227 1.664-4.771 4.919-4.919 1.266-.057 1.645-.069 4.849-.069zm0-2.163c-3.259 0-3.667.014-4.947.072-4.358.2-6.78 2.618-6.98 6.98-.059 1.281-.073 1.689-.073 4.948 0 3.259.014 3.668.072 4.948.2 4.358 2.618 6.78 6.98 6.98 1.281.058 1.689.072 4.948.072 3.259 0 3.668-.014 4.948-.072 4.354-.2 6.782-2.618 6.979-6.98.059-1.28.073-1.689.073-4.948 0-3.259-.014-3.667-.072-4.947-.196-4.354-2.617-6.78-6.979-6.98-1.281-.059-1.69-.073-4.949-.073zm0 5.838c-3.403 0-6.162 2.759-6.162 6.162s2.759 6.163 6.162 6.163 6.162-2.759 6.162-6.163c0-3.403-2.759-6.162-6.162-6.162zm0 10.162c-2.209 0-4-1.79-4-4 0-2.209 1.791-4 4-4s4 1.791 4 4c0 2.21-1.791 4-4 4zm6.406-11.845c-.796 0-1.441.645-1.441 1.44s.645 1.44 1.441 1.44c.795 0 1.439-.645 1.439-1.44s-.644-1.44-1.439-1.44z"/></svg>
+                  {publishing === 'instagram' ? 'Opening Instagram…' : 'Publish to Instagram'}
+                </button>
+              </div>
+              {copied && (
+                <div style={{ padding: "0.7rem 1rem", background: "rgba(14,31,61,0.06)", borderRadius: "5px", fontSize: "0.78rem", marginBottom: "1rem", border: "1px solid var(--line)" }}>
+                  <strong>Desktop:</strong> Image copied — open the platform, create a new post, and paste (Ctrl+V / Cmd+V).
+                </div>
+              )}
+              <div style={{ display: "flex", gap: "0.5rem", justifyContent: "flex-end" }}>
+                <button onClick={() => setPendingExport(null)} style={{ padding: "0.6rem 1rem", background: "transparent", border: "1px solid var(--line-med)", color: "var(--navy)", borderRadius: "5px", fontSize: "0.85rem", cursor: "pointer" }}>Close</button>
+                <a href={pendingExport.dataUrl} download={pendingExport.filename} onClick={() => setTimeout(() => setPendingExport(null), 300)}
+                  style={{ padding: "0.6rem 1rem", background: "var(--navy)", color: "var(--gold)", borderRadius: "5px", fontSize: "0.85rem", textDecoration: "none", fontWeight: 600 }}>
+                  ↓ Download
+                </a>
+              </div>
             </div>
-          </CmsCard>
-        </div>
+          </div>
+        )}
       </div>
     </Fragment>
   );
@@ -2314,25 +2278,14 @@ function AdStudioTab({ packages = [] }) {
 
 
 
+
 function AdminLogin({ onLogin }) {
-  const [pw, setPw] = useState(""); const [err, setErr] = useState(""); const [loading, setLoading] = useState(false);
+  const [pw, setPw] = useState(""); const [err, setErr] = useState("");
   const handle = async (e) => {
     e.preventDefault();
-    setErr("");
-    setLoading(true);
-    try {
-      const res = await fetch('/api/admin/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ password: pw }),
-      });
-      if (!res.ok) throw new Error('Wrong password.');
-      onLogin();
-    } catch (error) {
-      setErr(error.message || "Wrong password.");
-    } finally {
-      setLoading(false);
-    }
+    const settings = await loadCmsData(SETTINGS_KEY, DEFAULT_SETTINGS);
+    if (pw === (settings.adminPassword || DEFAULT_SETTINGS.adminPassword)) onLogin();
+    else setErr("Wrong password.");
   };
   return (
     <div className="login-shell">
@@ -2343,7 +2296,7 @@ function AdminLogin({ onLogin }) {
         <form onSubmit={handle}>
           <div className="form-group"><label>Password</label><input type="password" className="form-control" value={pw} onChange={(e) => setPw(e.target.value)} autoFocus /></div>
           {err && <p style={{ color: "var(--rust)", fontSize: "0.85rem", marginBottom: "1rem" }}>{err}</p>}
-          <button type="submit" disabled={loading} className="btn-primary" style={{ width: "100%", justifyContent: "center", opacity: loading ? 0.7 : 1 }}>{loading ? "Checking…" : "Enter CMS →"}</button>
+          <button type="submit" className="btn-primary" style={{ width: "100%", justifyContent: "center" }}>Enter CMS →</button>
         </form>
         <p style={{ marginTop: "1rem", fontSize: "0.8rem" }}><a href="#/" onClick={(e) => { e.preventDefault(); navigate("/"); }} style={{ textDecoration: "underline", opacity: 0.7 }}>← Back to site</a></p>
       </div>
@@ -2351,7 +2304,7 @@ function AdminLogin({ onLogin }) {
   );
 }
 
-function AdminPanel({ packages, onUpdate, onShowToast, onLogout }) {
+function AdminPanel({ packages, onUpdate, onShowToast }) {
   const [tab, setTab] = useState("packages");
   const [seo, setSeo] = useState(null); const [settings, setSettings] = useState(null); const [sections, setSections] = useState(null); const [loaded, setLoaded] = useState(false);
   useEffect(() => {
@@ -2377,7 +2330,7 @@ function AdminPanel({ packages, onUpdate, onShowToast, onLogout }) {
     <div className="admin-shell">
       <div className="admin-bar">
         <h2><span className="badge-mini">M</span> Million CMS <span className="tag">v3</span></h2>
-        <div className="admin-actions"><button className="admin-btn" onClick={() => navigate("/")}>← View Site</button><button className="admin-btn danger" onClick={onLogout}>Log out</button></div>
+        <div className="admin-actions"><button className="admin-btn" onClick={() => navigate("/")}>← View Site</button></div>
       </div>
       <div style={{ display: "grid", gridTemplateColumns: "220px 1fr", minHeight: "calc(100vh - 60px)" }}>
         <div style={{ background: "var(--navy-deep)", padding: "1.5rem 0", borderRight: "1px solid var(--line-dark)" }}>
@@ -2396,7 +2349,7 @@ function AdminPanel({ packages, onUpdate, onShowToast, onLogout }) {
         <div style={{ background: "var(--cream)", overflowY: "auto" }}>
           {tab === "packages" && <PackagesTab packages={packages} onUpdate={onUpdate} onShowToast={onShowToast} />}
           {tab === "calculator" && <PriceCalculatorTab onShowToast={onShowToast} />}
-          {tab === "ad-studio" && <AdStudioTab packages={packages} />}
+          {tab === "ad-studio" && <AdStudioTab />}
           {tab === "seo"      && <SeoTab seo={seo} onSave={saveSeo} />}
           {tab === "photos"   && <PhotosTab settings={settings} onSave={saveSettings} />}
           {tab === "sections" && <SectionsTab sections={sections} onSave={saveSections} />}
@@ -2425,24 +2378,11 @@ function CmsCard({ title, children, style }) {
   );
 }
 
-function validatePackage(pkg, existingPackages = [], isNew = false, originalId = "") {
-  const title = String(pkg.title || "").trim();
-  const id = String(pkg.id || "").trim();
-  if (!title) return "Package title is required.";
-  if (!pkg.category || !CATEGORIES[pkg.category]) return "Choose a valid category.";
-  if (id && existingPackages.some(p => p.id === id && (isNew || p.id !== originalId))) return "Package ID already exists.";
-  if (pkg.priceFrom !== "" && Number.isNaN(Number(pkg.priceFrom))) return "Starting price must be a number.";
-  return null;
-}
-
 function PackagesTab({ packages, onUpdate, onShowToast }) {
   const [filter, setFilter] = useState("all"); const [editing, setEditing] = useState(null); const [creating, setCreating] = useState(false);
   const filtered = filter === "all" ? packages : packages.filter(p => p.category === filter);
   const handleSave = async (pkg) => {
-    const error = validatePackage(pkg, packages, creating, editing?.id);
-    if (error) { alert(error); return; }
-    const normalized = { ...pkg, id: safeFilename(pkg.id || pkg.title, `pkg-${Date.now()}`).toLowerCase(), title: String(pkg.title).trim() };
-    let next = creating ? [...packages, normalized] : packages.map(p => p.id === editing?.id ? normalized : p);
+    let next = creating ? [...packages, { ...pkg, id: pkg.id || `pkg-${Date.now()}` }] : packages.map(p => p.id === pkg.id ? pkg : p);
     await savePackages(next); onUpdate(next); setEditing(null); setCreating(false);
     onShowToast(creating ? "Package created ✓" : "Package saved ✓");
   };
@@ -2456,8 +2396,7 @@ function PackagesTab({ packages, onUpdate, onShowToast }) {
   };
   const handleExport = () => {
     const blob = new Blob([JSON.stringify(packages, null, 2)], { type: "application/json" });
-    downloadBlob(blob, `million-packages-${new Date().toISOString().slice(0,10)}.json`);
-    onShowToast("Exported ✓");
+    const url = URL.createObjectURL(blob); const a = document.createElement("a"); a.href = url; a.download = `million-packages-${new Date().toISOString().slice(0,10)}.json`; a.click(); URL.revokeObjectURL(url); onShowToast("Exported ✓");
   };
   const handleNew = () => {
     setEditing({ id: "", category: "outbound", title: "", titleAr: "", subtitle: "", heroImage: "https://images.unsplash.com/photo-1488085061387-422e29b40080?w=1600&q=85&fit=crop", cardImage: "", country: "", duration: "", transport: "", priceFrom: 0, currency: "JOD", description: "", destination: "", includes: [], excludes: [], notes: "", hotels: [] });
@@ -2475,7 +2414,7 @@ function PackagesTab({ packages, onUpdate, onShowToast }) {
         <table className="admin-table">
           <thead><tr><th style={{width:44}}>Img</th><th>Title</th><th>Category</th><th>Country</th><th>Price</th><th>Hotels</th><th>PDF</th><th>Actions</th></tr></thead>
           <tbody>
-            {filtered.length === 0 && <tr><td colSpan="8" style={{ textAlign: "center", padding: "3rem", opacity: 0.5 }}>No packages.</td></tr>}
+            {filtered.length === 0 && <tr><td colSpan="7" style={{ textAlign: "center", padding: "3rem", opacity: 0.5 }}>No packages.</td></tr>}
             {filtered.map(p => (
               <tr key={p.id}>
                 <td><div style={{ width: 40, height: 40, borderRadius: 4, backgroundImage: `url(${p.cardImage || p.heroImage})`, backgroundSize: "cover", backgroundPosition: "center", background: "var(--navy)" }}></div></td>
@@ -2795,9 +2734,11 @@ function SettingsTab({ settings, onSave }) {
           <div className="form-group"><label>Quote Text</label><textarea className="form-control" rows="4" value={form.quoteText} onChange={e => u("quoteText",e.target.value)}/></div>
           <div className="form-group"><label>Quote Attribution</label><input className="form-control" value={form.quoteAuthor} onChange={e => u("quoteAuthor",e.target.value)}/></div>
         </CmsCard>}
-        {tab==="security" && <CmsCard title="Admin Security">
-          <div style={{background:"rgba(14,31,61,0.06)",border:"1px solid var(--line)",borderRadius:4,padding:"0.9rem 1rem",fontSize:"0.84rem",color:"var(--navy)",lineHeight:1.6}}>
-            Admin login is now checked on the server. Set the password in <strong>.env.local</strong> using <code>ADMIN_PASSWORD</code> and set a long random <code>ADMIN_SESSION_SECRET</code>. Better Auth can replace this temporary layer later.
+        {tab==="security" && <CmsCard title="Admin Password">
+          <div style={{background:"rgba(201,81,46,0.08)",border:"1px solid rgba(201,81,46,0.25)",borderRadius:4,padding:"0.75rem 1rem",marginBottom:"1.25rem",fontSize:"0.84rem",color:"var(--rust)"}}>⚠️ Remember your new password before saving. There is no recovery option.</div>
+          <div className="form-row">
+            <div className="form-group"><label>New Password</label><input type="password" className="form-control" value={form.adminPassword} onChange={e => u("adminPassword",e.target.value)}/></div>
+            <div className="form-group"><label>Confirm</label><input type="password" className="form-control" placeholder="Type again" onBlur={e => { if(e.target.value && e.target.value!==form.adminPassword) alert("Passwords do not match."); }}/></div>
           </div>
         </CmsCard>}
         <div style={{ display:"flex", justifyContent:"flex-end" }}>
@@ -2821,47 +2762,6 @@ function fileToBase64(file) {
   });
 }
 
-async function uploadAdminFile(file, kind) {
-  const form = new FormData();
-  form.append('file', file);
-  form.append('kind', kind);
-
-  const res = await fetch('/api/uploads', { method: 'POST', body: form });
-  if (!res.ok) {
-    const body = await res.json().catch(() => ({}));
-    throw new Error(body.error || 'Upload failed.');
-  }
-
-  const body = await res.json();
-  return body.file;
-}
-
-function safeFilename(name, fallback = "download") {
-  return String(name || fallback)
-    .trim()
-    .replace(/[^a-z0-9._-]+/gi, "-")
-    .replace(/^-+|-+$/g, "") || fallback;
-}
-
-function downloadBlob(blob, filename) {
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = safeFilename(filename);
-  a.rel = "noopener";
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
-}
-
-function dataUrlToBlob(dataUrl) {
-  const [header, b64] = String(dataUrl || "").split(",");
-  const mime = header?.match(/:(.*?);/)?.[1] || "application/octet-stream";
-  const bytes = Uint8Array.from(atob(b64 || ""), c => c.charCodeAt(0));
-  return new Blob([bytes], { type: mime });
-}
-
 function ImageUploader({ label, desc, value, onChange, aspect }) {
   const [dragging, setDragging] = useState(false);
   const inputRef = useRef();
@@ -2869,14 +2769,8 @@ function ImageUploader({ label, desc, value, onChange, aspect }) {
   const handleFile = async (file) => {
     if (!file || !file.type.startsWith("image/")) { alert("Please select an image file."); return; }
     if (file.size > 4 * 1024 * 1024) { alert("Image must be under 4MB."); return; }
-    try {
-      const uploaded = await uploadAdminFile(file, "images");
-      onChange(uploaded.publicUrl);
-    } catch (error) {
-      console.warn("Image upload failed; falling back to inline base64.", error);
-      const b64 = await fileToBase64(file);
-      onChange(b64);
-    }
+    const b64 = await fileToBase64(file);
+    onChange(b64);
   };
 
   const onDrop = (e) => { e.preventDefault(); setDragging(false); const f = e.dataTransfer.files[0]; if(f) handleFile(f); };
@@ -2929,22 +2823,17 @@ function PdfUploader({ value, onChange }) {
   const handleFile = async (file) => {
     if (!file || file.type !== "application/pdf") { alert("Please select a PDF file."); return; }
     if (file.size > 10 * 1024 * 1024) { alert("PDF must be under 10MB."); return; }
-    try {
-      const uploaded = await uploadAdminFile(file, "brochures");
-      setName(file.name);
-      onChange({ data: uploaded.publicUrl, name: file.name, size: file.size, storageKey: uploaded.storageKey });
-    } catch (error) {
-      alert(error.message || "PDF upload failed.");
-    }
+    const b64 = await fileToBase64(file);
+    setName(file.name);
+    onChange({ data: b64, name: file.name, size: file.size });
   };
 
   const download = () => {
     if (!value?.data) return;
-    if (String(value.data).startsWith('data:')) {
-      downloadBlob(dataUrlToBlob(value.data), value.name || "package.pdf");
-      return;
-    }
-    window.open(value.data, '_blank', 'noopener,noreferrer');
+    const a = document.createElement("a");
+    a.href = value.data;
+    a.download = value.name || "package.pdf";
+    a.click();
   };
 
   const remove = () => { setName(""); onChange(null); };
@@ -3092,6 +2981,7 @@ function HotelEditor({ hotel, onChange, onRemove }) {
 
 /* ============ APP ============ */
 function App() {
+  // SSR-safe default; real route resolved from window.location on mount.
   const [route, setRoute] = useState({ name: "home" });
   const [packages, setPackages] = useState(SEED_DATA.packages);
   const [loaded, setLoaded] = useState(false);
@@ -3101,10 +2991,6 @@ function App() {
   useEffect(() => {
     const onHash = () => setRoute(parseRoute());
     onHash();
-    fetch('/api/admin/session')
-      .then(res => res.ok ? res.json() : { authenticated: false })
-      .then(data => setAdminAuthed(Boolean(data.authenticated)))
-      .catch(() => setAdminAuthed(false));
     window.addEventListener("hashchange", onHash);
     return () => window.removeEventListener("hashchange", onHash);
   }, []);
@@ -3128,7 +3014,7 @@ function App() {
 
   if (route.name === "admin") {
     if (!adminAuthed) return <AdminLogin onLogin={() => setAdminAuthed(true)} />;
-    return <Fragment><AdminPanel packages={packages} onUpdate={setPackages} onShowToast={showToast} onLogout={async () => { await fetch('/api/admin/logout', { method: 'POST' }); setAdminAuthed(false); }} />{toast && <div className="toast">{toast}</div>}</Fragment>;
+    return <Fragment><AdminPanel packages={packages} onUpdate={setPackages} onShowToast={showToast} />{toast && <div className="toast">{toast}</div>}</Fragment>;
   }
 
   let page;
